@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>108 Emergency SOS</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0b0f19; color: #fff; text-align: center; }
+    .container { max-width: 480px; margin: auto; padding: 16px; }
+    .sos-btn {
+      width: 210px; height: 210px; border-radius: 50%; border: 8px solid #fca5a5;
+      background: #dc2626; color: white; font-size: 42px; font-weight: 900;
+      margin: 40px auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      box-shadow: 0 0 40px rgba(220, 38, 38, 0.8); cursor: pointer;
+    }
+    .grid-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0; }
+    .action-btn {
+      padding: 22px 10px; border-radius: 18px; border: none; font-size: 20px; font-weight: 700;
+      color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    .mic-btn { background: #2563eb; }
+    .mic-btn.recording { background: #eab308; color: #000; animation: pulse 1s infinite; }
+    .cam-btn { background: #059669; }
+    .lang-bar { display: flex; gap: 8px; justify-content: center; margin-bottom: 10px; }
+    .lang-btn { padding: 8px 14px; border-radius: 20px; border: 1px solid #334155; background: #1e293b; color: #fff; font-weight: bold; }
+    .lang-btn.active { background: #38bdf8; color: #000; }
+    #map { height: 230px; border-radius: 16px; margin-top: 12px; }
+    .voice-box { background: #1e293b; padding: 14px; border-radius: 14px; margin-top: 10px; font-size: 18px; min-height: 54px; }
+    .facility-card { background: #1e293b; padding: 10px; border-radius: 10px; margin-top: 8px; display: flex; justify-content: space-between; align-items: center; text-align: left; }
+    .nav-link { background: #10b981; color: #000; padding: 8px 12px; border-radius: 8px; text-decoration: none; font-weight: 800; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.04); } 100% { transform: scale(1); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="sos-screen">
+      <h2>🚨 108 EMERGENCY</h2>
+      <button class="sos-btn" onclick="startSOS()">🚨<span>SOS</span></button>
+      <p style="font-size:18px; color:#94a3b8;">Tap Red Button for Ambulance & Voice Help</p>
+    </div>
+
+    <div id="active-screen" style="display:none;">
+      <div style="background:#dc2626; padding:10px; border-radius:12px; font-weight:800; font-size:18px;">
+        🚑 AMBULANCE DISPATCHED • ID: <span id="session-label"></span>
+      </div>
+
+      <div class="lang-bar" style="margin-top:10px;">
+        <button class="lang-btn active" onclick="setLang('auto', this)">Auto</button>
+        <button class="lang-btn" onclick="setLang('te', this)">తెలుగు</button>
+        <button class="lang-btn" onclick="setLang('hi', this)">हिंदी</button>
+        <button class="lang-btn" onclick="setLang('en', this)">English</button>
+      </div>
+
+      <div class="grid-actions">
+        <button id="mic-btn" class="action-btn mic-btn" onclick="toggleRecording()">
+          <span style="font-size:38px;">🎙️</span>
+          <span id="mic-label">TAP TO SPEAK</span>
+        </button>
+        <label class="action-btn cam-btn">
+          <span style="font-size:38px;">📷</span>
+          <span>INJURY PHOTO</span>
+          <input type="file" accept="image/*" capture="environment" style="display:none;" onchange="uploadPhoto(this)" />
+        </label>
+      </div>
+
+      <div class="voice-box" id="bot-text">🔊 Tap the blue mic and describe what happened.</div>
+      <audio id="bot-audio" autoplay></audio>
+      <div id="tracker-bar" style="background:#0f172a; border:1px solid #38bdf8; padding:10px; border-radius:12px; margin-top:10px; font-weight:700; color:#38bdf8;">
+        🚑 Calculating Ambulance Distance & ETA...
+      </div>
+      
+      <div id="map"></div>
+      <div id="facilities-list"></div>
+    </div>
+  </div>
+<script>
+    let sessionId = null, map = null, ambMarker = null, routeLine = null, selectedLang = "auto";
+    let victimCoords = null, mediaRecorder = null, audioChunks = [], isRecording = false;
+
+    const ambIcon = L.divIcon({
+      html: '<div style="font-size:30px; filter:drop-shadow(0 2px 6px #000);">🚑</div>',
+      className: '', iconSize: [34, 34], iconAnchor: [17, 17]
+    });
+
+    function calcDistanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function updateTrackerUI(ambLat, ambLon, status = "EN_ROUTE") {
+      if (!victimCoords || !ambMarker) return;
+      ambMarker.setLatLng([ambLat, ambLon]);
+      if (routeLine) {
+        routeLine.setLatLngs([[ambLat, ambLon], victimCoords]);
+      }
+
+      const distKm = calcDistanceKm(ambLat, ambLon, victimCoords[0], victimCoords[1]);
+      const etaMin = Math.max(1, Math.round((distKm / 40) * 60));
+      const bar = document.getElementById('tracker-bar');
+
+      if (status === "ARRIVED" || distKm < 0.05) {
+        bar.style.borderColor = "#10b981";
+        bar.style.color = "#10b981";
+        bar.innerText = "✅ 108 AMBULANCE HAS ARRIVED AT ACCIDENT SPOT!";
+      } else {
+        bar.innerText = `🚑 Ambulance En Route • ${distKm.toFixed(2)} km away (~${etaMin} min ETA)`;
+      }
+    }
+
+    function setLang(lang, el) {
+      selectedLang = lang;
+      document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+   async function startSOS() {
+      document.querySelector('#sos-screen p').innerText = "📡 Acquiring your exact GPS location...";
+
+      const fallbackToIP = async () => {
+        try {
+          const res = await fetch('https://ipapi.co/json/');
+          const geo = await res.json();
+          if (geo.latitude && geo.longitude) {
+            initEmergency(geo.latitude, geo.longitude);
+            return;
+          }
+        } catch (e) {}
+        initEmergency(17.3850, 78.4867); // Last-resort fallback if completely offline
+      };
+
+      if (!navigator.geolocation) {
+        fallbackToIP();
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        pos => initEmergency(pos.coords.latitude, pos.coords.longitude),
+        () => fallbackToIP(),
+        { enableHighAccuracy: true, timeout: 7000, maximumAge: 0 }
+      );
+    }
+
+    async function initEmergency(lat, lon) {
+      try {
+        const res = await fetch('/api/sos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon })
+        });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const data = await res.json();
+        sessionId = data.session_id;
+        victimCoords = [lat, lon];
+
+        document.getElementById('sos-screen').style.display = 'none';
+        document.getElementById('active-screen').style.display = 'block';
+        document.getElementById('session-label').innerText = sessionId;
+
+        map = L.map('map').setView([lat, lon], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        L.marker([lat, lon]).addTo(map).bindPopup("📍 Patient Accident Spot").openPopup();
+        ambMarker = L.marker([data.ambulance.lat, data.ambulance.lon], { icon: ambIcon })
+          .addTo(map).bindPopup("🚑 108 Ambulance");
+
+        routeLine = L.polyline([[data.ambulance.lat, data.ambulance.lon], [lat, lon]], {
+          color: '#38bdf8', weight: 4, dashArray: '8, 8'
+        }).addTo(map);
+
+        updateTrackerUI(data.ambulance.lat, data.ambulance.lon);
+
+        const bounds = L.latLngBounds([[lat, lon], [data.ambulance.lat, data.ambulance.lon]]);
+        map.fitBounds(bounds, { padding: [45, 45] });
+
+        const list = document.getElementById('facilities-list');
+        list.innerHTML = "<h3 style='text-align:left; margin-bottom:6px;'>🏥 Nearby Hospitals & Pharmacies</h3>";
+        data.facilities.forEach(f => {
+          L.circleMarker([f.lat, f.lon], { radius: 6, color: '#10b981', fillOpacity: 0.9 })
+            .addTo(map).bindPopup(`🏥 ${f.name} (${f.distance_km} km)`);
+          list.innerHTML += `
+            <div class="facility-card">
+              <div><strong>${f.name}</strong><br><small>${f.type} • ${f.distance_km} km</small></div>
+              <a class="nav-link" href="${f.maps_url}" target="_blank">GO ➔</a>
+            </div>`;
+        });
+
+        const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${wsProto}://${location.host}/ws/${sessionId}`);
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'AMBULANCE_GPS') {
+            updateTrackerUI(msg.lat, msg.lon, msg.status || "EN_ROUTE");
+          }
+        };
+      } catch (err) {
+        alert("Failed to start SOS: " + err.message);
+      }
+    }
+
+    async function toggleRecording() {
+      const btn = document.getElementById('mic-btn');
+      const label = document.getElementById('mic-label');
+
+      if (!isRecording) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+          mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+          mediaRecorder.onstop = sendAudioToBackend;
+          mediaRecorder.start();
+          isRecording = true;
+          btn.classList.add('recording');
+          label.innerText = "STOP & SEND";
+          document.getElementById('bot-text').innerText = "🎙️ Listening... Speak now, then tap STOP & SEND.";
+        } catch (err) {
+          document.getElementById('bot-text').innerText = "⚠️ Microphone access denied. Allow mic in browser settings.";
+        }
+      } else {
+        mediaRecorder.stop();
+        isRecording = false;
+        btn.classList.remove('recording');
+        label.innerText = "PROCESSING...";
+        document.getElementById('bot-text').innerText = "⏳ Transcribing & getting first-aid guidance...";
+      }
+    }
+
+    async function sendAudioToBackend() {
+      try {
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('audio', blob, 'speech.webm');
+        formData.append('lang_hint', selectedLang);
+
+        const res = await fetch(`/api/voice/${sessionId}`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(`Voice API error (${res.status})`);
+        const data = await res.json();
+
+        document.getElementById('mic-label').innerText = "TAP TO SPEAK";
+        document.getElementById('bot-text').innerText = `🗣️ You: "${data.user_text}"\n🔊 Dispatcher: ${data.bot_reply}`;
+        if (data.audio_url) {
+          const audioEl = document.getElementById('bot-audio');
+          audioEl.src = data.audio_url;
+          audioEl.play().catch(() => {});
+        }
+      } catch (err) {
+        document.getElementById('mic-label').innerText = "TAP TO SPEAK";
+        document.getElementById('bot-text').innerText = "❌ Voice error: " + err.message + " (Check VS Code terminal)";
+      }
+    }
+
+    async function uploadPhoto(input) {
+      if (!input.files[0]) return;
+      document.getElementById('bot-text').innerText = "⏳ Analyzing injury photo with Gemini Vision...";
+      try {
+        const formData = new FormData();
+        formData.append('image', input.files[0]);
+        const res = await fetch(`/api/triage/${sessionId}`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(`Vision API error (${res.status})`);
+        const data = await res.json();
+        document.getElementById('bot-text').innerText =
+          `✅ Sent to Doctor: ${data.triage.injury_type} (${data.triage.severity}) — ${data.triage.recommended_doctor_prep}`;
+      } catch (err) {
+        document.getElementById('bot-text').innerText = "❌ Photo upload error: " + err.message;
+      }
+    }
+  </script>
+</body>
+</html>

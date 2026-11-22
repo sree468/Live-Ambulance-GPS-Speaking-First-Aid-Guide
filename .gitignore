@@ -1,0 +1,10 @@
+
+.env
+venv/
+__pycache__/
+*.db
+faiss_index/
+static/audio/*.mp3
+static/audio/*.webm
+static/uploads/*.jpg
+static/uploads/*.png

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>108 Ambulance Driver Simulator</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 24px; max-width: 520px; margin: auto; }
+    select, button { width: 100%; padding: 14px; margin-top: 12px; border-radius: 10px; font-size: 16px; font-weight: bold; }
+    button { background: #16a34a; color: white; border: none; cursor: pointer; }
+    .card { background: #1e293b; padding: 16px; border-radius: 12px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h2>🚑 108 Ambulance GPS Simulator</h2>
+  <button onclick="loadSessions()">🔄 Refresh Active SOS Calls</button>
+  <select id="session-select"></select>
+  <button onclick="startDriving()" style="background:#2563eb;">▶️ Start Live GPS Dispatch Simulation</button>
+  <div class="card" id="status">Waiting to start dispatch...</div>
+
+  <script>
+    let sessions = [], intervalId = null;
+
+    async function loadSessions() {
+      const res = await fetch('/api/sessions');
+      sessions = await res.json();
+      const sel = document.getElementById('session-select');
+      sel.innerHTML = sessions.map(s => `<option value="${s.session_id}">${s.session_id} (${s.status})</option>`).join('');
+    }
+
+    function startDriving() {
+      const id = document.getElementById('session-select').value;
+      const target = sessions.find(s => s.session_id === id);
+      if (!target) return;
+
+      const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${wsProto}://${location.host}/ws/${id}`);
+
+      let curLat = target.ambulance.lat;
+      let curLon = target.ambulance.lon;
+      const destLat = target.bystander.lat;
+      const destLon = target.bystander.lon;
+
+      if (intervalId) clearInterval(intervalId);
+      ws.onopen = () => {
+        intervalId = setInterval(() => {
+          curLat += (destLat - curLat) * 0.12;
+          curLon += (destLon - curLon) * 0.12;
+          ws.send(JSON.stringify({ type: "AMBULANCE_GPS", lat: curLat, lon: curLon }));
+          document.getElementById('status').innerText = `📡 Streaming GPS for ${id}:\nLat: ${curLat.toFixed(5)}, Lon: ${curLon.toFixed(5)}`;
+        }, 2000);
+      };
+    }
+    loadSessions();
+  </script>
+</body>
+</html>
